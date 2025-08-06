@@ -248,7 +248,7 @@ EOF
 # === STEP 8: Run Playbook and Validate ===
 export ANSIBLE_LOG_PATH=./ansible.log
 log "Running playbook."
-ANSIBLE_SSH_ARGS="-vvv" ansible-playbook -i hosts site2.yaml
+ANSIBLE_SSH_ARGS="-vvv" ansible-playbook -i hosts site.yaml
 log "Done, solution has been deployed."
 log "Validates operation."
 log "Request1: …node1"
