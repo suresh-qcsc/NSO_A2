@@ -1,0 +1,74 @@
+global
+    profiling.tasks on #Enable HAProxy profiling (CPU time spent on processing a http request inside HAProxy)
+    nbthread 1 # 1 thread, IDs from 1 to 2, nbthread <number of CPU cores>
+    thread-groups 1
+    # declare threads
+    thread-group 1 1-1
+    # bind threads to cpu cores
+    cpu-map 1/all 0-0 # bind all threads to CPU 0 #syntax:cpu-map 1/1-<Number Of CPU Cores> 0-<Number of CPU Cores - 1>
+    # define logging
+    log /dev/log local0 info
+    #log /dev/log local0 emerg
+    #log /dev/log local1 alert
+    #log /dev/log local2 crit
+    #log /dev/log local3 err
+    #log /dev/log local4 warning
+    #log /dev/log local5 notice
+    #log /dev/log local6 info
+    #log /dev/log local7 debug
+    #Security Considerations
+    chroot /var/lib/haproxy #chroot statement pointing to a /var/lib/haproxy location
+    user haproxy # uid/user statement
+    group haproxy # gid/group statement
+    stats socket /run/haproxy.sock user haproxy group haproxy mode 660 level admin
+    stats maxconn 20
+    stats timeout 30000
+    daemon
+    maxconn 512
+        
+defaults
+    mode http
+    timeout connect 5000ms
+    timeout client 5000ms
+    timeout server 5000ms
+    errorfile 400 /etc/haproxy/errors/400.http
+    errorfile 403 /etc/haproxy/errors/403.http
+    errorfile 408 /etc/haproxy/errors/408.http
+    errorfile 500 /etc/haproxy/errors/500.http
+    errorfile 502 /etc/haproxy/errors/502.http
+    errorfile 503 /etc/haproxy/errors/503.http
+    errorfile 504 /etc/haproxy/errors/504.http
+
+{% if haproxy_stats_bool %}
+frontend web_stats
+    mode {{ haproxy_stats_mode }}
+    bind {{ haproxy_stats_address }}:{{ haproxy_stats_port }} 
+    http-request use-service prometheus-exporter if { path /metrics }
+    stats enable # enable stats page
+    stats uri /stats # stats uri
+    stats hide-version
+    stats refresh {{ haproxy_stats_refresh_timeout }}
+    stats auth {{ haproxy_stats_auth_username }}:{{ ui_password }}
+{% endif %}
+
+frontend haproxy_frontend
+    log global
+    bind {{ haproxy_address }}:{{ haproxy_port }}  thread 1/all shards by-thread  #bind this proxy to threads 1 to 1 or all
+    mode {{ haproxy_mode }}
+    option httplog
+    #option dontlog-normal
+    #option logasap
+    #define custom log-format
+{% if haproxy_custom_log_format_bool %}
+    log-format "%ci:%cp [%tr] %ft %b/%s %TR/%Tw/%Tc/%Tr/%Ta %ST %B %CC %CS %tsc %ac/%fc/%bc/%sc/%rc %sq/%bq %hr %hs %{+Q}r %[http_first_req] cpu_calls:%[cpu_calls] cpu_ns_tot:%[cpu_ns_tot] cpu_ns_avg:%[cpu_ns_avg] lat_ns_tot:%[lat_ns_tot] lat_ns_avg:%[lat_ns_avg]"
+{% endif %}
+    default_backend haproxy_backend
+    
+backend haproxy_backend
+    retry-on all-retryable-errors # This works when conn-failure, empty-response, junk-response, response-timeout, rtt-rejected, 500, 502, 503, and 504
+    retries 3
+    {% for host in groups['webservers'] %}
+         server {{ host }} {{ hostvars[host]['ansible_default_ipv4']['address'] }}:5000 check maxconn 64
+    {% endfor %}
+
+

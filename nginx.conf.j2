@@ -1,0 +1,27 @@
+# nginx.conf.j2 file
+
+user www-data;
+worker_processes auto;
+pid /run/nginx.pid;
+include /etc/nginx/modules-enabled/*.conf;
+
+events {
+    worker_connections 768;
+    multi_accept on;
+}
+
+stream {
+    upstream snmp_udp_backend_servers {
+        {% for host in groups['webservers'] %}
+        server {{ hostvars[host]['ansible_default_ipv4']['address'] }}:6000;
+        {% endfor %}
+    }
+
+    server {
+        listen 0.0.0.0:1611 udp;
+        proxy_pass snmp_udp_backend_servers;
+        error_log       /var/log/nginx/dns.log info;
+        proxy_responses 1;
+        proxy_timeout   1s;
+    }
+}

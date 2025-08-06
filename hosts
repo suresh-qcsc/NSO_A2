@@ -1,10 +1,23 @@
-[HAproxy]  
-HAproxy 
-[webservers]  
-devA  
-devB  
-devC  
- 
-[all:vars]  
-ansible_user=ubuntu  
-##REMOVED sshkey entry, handled by external SSH config file ## 
+[webservers]
+rev1_devA ansible_host=10.1.1.38
+rev1_devB ansible_host=10.1.1.10
+rev1_devC ansible_host=10.1.1.58
+
+[webservers:vars]
+ansible_ssh_common_args='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ProxyCommand="ssh -W %h:%p -i /home/ubuntu/.ssh/rev1_key75 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ubuntu@188.240.223.200"'
+
+[HAproxy]
+rev1_HAproxy ansible_host=188.240.223.88
+
+[HAproxy:vars]
+ansible_ssh_common_args='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'
+
+[NGINX]
+rev1_NGINX ansible_host=188.240.223.8
+
+[NGINX:vars]
+ansible_ssh_common_args='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'
+
+[all:vars]
+ansible_user=ubuntu
+ansible_ssh_private_key_file=/home/ubuntu/.ssh/rev1_key75

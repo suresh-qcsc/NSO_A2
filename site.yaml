@@ -1,0 +1,518 @@
+---
+
+- name: Set up Flask app servers and SNMPd for monitoring 
+  hosts: webservers
+  gather_facts: true
+  become: yes
+  vars:
+    ufw_http_port: 80
+    ufw_snmp_port: 6000
+    ufw_tcp_prot: tcp
+    ufw_udp_prot: udp
+    flask_app_src: service.py
+    flask_app_dest: /home/ubuntu/service.py
+    snmp_config_path: /etc/snmp/snmpd.conf
+    required_packages:
+      - python3
+      - python3-pip
+      - snmpd
+      - snmp
+      - snmp-mibs-downloader
+  tasks:
+    - name: Install required packages
+      apt:
+        name: "{{ item }}"
+        state: present
+        update_cache: yes
+      loop: "{{ required_packages }}"
+        
+    - name: Install Flask
+      pip:
+        name: flask
+        state: present
+        
+    - name: Deploy the Flask application config for TCP Load Balancing
+      copy:
+        src: "{{ flask_app_src }}"
+        dest: "{{ flask_app_dest }}"
+        
+    - name: Start Flask app in background on port 5000
+      ansible.builtin.shell: nohup python3 /home/ubuntu/service.py > /tmp/flask.log 2>&1 &
+      args:
+        executable: /bin/bash
+        
+    - name: Check Flask app HTTP response on private IP
+      ansible.builtin.shell: curl -s http://{{ ansible_default_ipv4.address }}:5000/
+      register: flask_curl_private
+      retries: 3
+      delay: 5
+      until: flask_curl_private.rc == 0
+      
+    - name: Display Flask app HTTP response on private IP
+      debug:
+        msg: "{{ flask_curl_private.stdout }}"
+        
+    - name: Remove the existing agent address lines
+      lineinfile:
+        path: "{{ snmp_config_path }}"
+        regexp: '^agentaddress'
+        state: absent
+        
+    - name: Configure agent address (0.0.0.0) for SNMPd to listen on all UDP interfaces
+      lineinfile:
+        path: "{{ snmp_config_path }}"
+        line: agentaddress  0.0.0.0:6000
+        create: yes
+      register: snmpd_agentaddress_changed
+
+
+    - name: Check snmpd config File
+      ansible.builtin.shell: cat "{{ snmp_config_path }}"
+      register: snmpd_config_file
+
+    - name: Display snmpd configuration file
+      debug:
+        var: snmpd_config_file 
+      
+    - name: Restart SNMPD if agent address configuration is changed
+      service:
+        name: snmpd
+        state: restarted
+      when: snmpd_agentaddress_changed.changed
+      
+    - name: Test SNMPd with snmpget on {{ ansible_default_ipv4.address }}
+      ansible.builtin.shell: snmpget -v2c -c public {{ ansible_default_ipv4.address }}:{{ ufw_snmp_port }} SNMPv2-MIB::sysName.0
+      register: snmpget_result
+      retries: 3
+      delay: 5
+      until: snmpget_result.rc == 0
+      
+    - name: Print SNMPd snmpget result
+      debug:
+        msg: "{{ snmpget_result.stdout }}"
+
+  handlers:
+    - name: Restart SNMPD
+      service:
+        name: snmpd
+        state: restarted
+
+- name: Set up HAProxy
+  hosts: HAproxy
+  gather_facts: true
+  become: yes
+  vars:
+    haproxy_cfg_j2: haproxy.cfg.j2
+    haproxy_cfg_path: /etc/haproxy/haproxy.cfg
+    haproxy_mode: http
+    haproxy_address: "*"
+    haproxy_stats_address: "*"
+    haproxy_port: 80
+    haproxy_stats_bool: true
+    haproxy_custom_log_format_bool: true
+    haproxy_stats_mode: http
+    haproxy_stats_port: 80
+    haproxy_stats_refresh_timeout: 1s
+    haproxy_stats_uri: /stats
+    haproxy_stats_auth_username: admin
+  tasks:
+    - name: Add HAProxy 2.9 PPA
+      apt_repository:
+        repo: ppa:vbernat/haproxy-2.9
+        state: present
+        update_cache: yes
+        
+    - name: Install HAProxy
+      apt:
+        name: haproxy=2.9.*
+        update_cache: yes
+        
+    - name: Deploy stats web page password file
+      copy:
+        src: uipassword
+        dest: /etc/haproxy/uipassword
+        owner: root
+        group: root
+        mode: 0644
+        
+    - name: Read stats page password from file
+      slurp:
+        src: /etc/haproxy/uipassword
+      register: stats_ui_password
+      
+    - name: Set up HAProxy stats secret variable
+      set_fact:
+        ui_password: "{{ stats_ui_password['content'] | b64decode | trim }}"
+        
+    - name: Configure HAProxy
+      template:
+        src: "{{ haproxy_cfg_j2 }}"
+        dest: "{{ haproxy_cfg_path }}"
+        owner: root
+        group: root
+        mode: 0644
+
+    - name: Deploy rsyslog 49-haproxy config file
+      copy:
+        dest: /etc/rsyslog.d/49-haproxy.conf
+        owner: root
+        group: root
+        mode: '0644'
+        content: |
+          # Create an additional socket in haproxy's chroot in order to allow logging via
+          # /dev/log to chroot'ed HAProxy processes
+          $AddUnixListenSocket /var/lib/haproxy/dev/log
+
+          # Send HAProxy messages to a dedicated logfile
+          :programname, startswith, "haproxy" {
+            /var/log/haproxy.log
+          stop
+          }
+      notify: Restart rsyslog service
+
+    - name: Return 49_haproxy_conf to registered rsyslog_49_haproxy_conf 
+      ansible.builtin.command: cat /etc/rsyslog.d/49-haproxy.conf
+      register: rsyslog_49_haproxy_conf
+
+    - debug:
+        var: rsyslog_49_haproxy_conf.stdout_lines
+
+    - name: Test HAProxy Configurations
+      ansible.builtin.command: haproxy -f {{ haproxy_cfg_path }} -c
+      register: haproxy_configs_test_result
+      notify: Restart HAProxy service
+      
+    - name: Display HAProxy config test result
+      debug:
+        var: haproxy_configs_test_result
+        
+    - name: Test HAProxy is running
+      service:
+        name: haproxy
+        state: started
+      register: haproxy_service_status
+
+    - name: Display the HAProxy service status
+      debug:
+        var: haproxy_service_status.state
+
+    - name: Check HAProxy server status
+      ansible.builtin.command: systemctl status haproxy.service
+      register: systemctl_haproxy_service_status
+      
+    - name: Display HAProxy server status
+      debug:
+        var: systemctl_haproxy_service_status.stdout_lines
+
+    - name: Check HAProxy config errors via journalctl
+      ansible.builtin.command: journalctl -u haproxy.service -n 100 --no-pager
+      register: haproxy_journalctl_logs
+      
+    - name: Display HAProxy config errors
+      debug:
+        var: haproxy_journalctl_logs.stdout_lines
+
+    - name: Check the HAProxy configuration file
+      ansible.builtin.command: cat "{{ haproxy_cfg_path }}"
+      register: haproxy_config_file
+      ignore_errors: yes
+      
+    - name: Display HAProxy configuration file
+      debug:
+        var: haproxy_config_file.stdout_lines
+
+  handlers:
+    - name: Restart HAProxy service
+      service:
+        name: haproxy
+        state: restarted
+        
+    - name: Restart rsyslog service
+      service:
+        name: rsyslog
+        state: restarted
+
+# Install the Grafana Alloy Agent on HAproxy server
+- name: Install the Grafana Alloy Agent on HAproxy
+  hosts: HAproxy
+  become: yes
+  tasks:
+    - name: Install the Grafana Alloy Agent
+      shell: >
+        GCLOUD_HOSTED_METRICS_ID="2530729" \
+
+        GCLOUD_HOSTED_METRICS_URL="https://prometheus-prod-39-prod-eu-north-0.grafana.net/api/prom/push" \
+
+        GCLOUD_HOSTED_LOGS_ID="1261041" \
+
+        GCLOUD_HOSTED_LOGS_URL="https://logs-prod-025.grafana.net/loki/api/v1/push" \
+
+        GCLOUD_FM_URL="https://fleet-management-prod-016.grafana.net" \
+
+        GCLOUD_FM_POLL_FREQUENCY="60s" \
+
+        GCLOUD_FM_HOSTED_ID="1303247" \
+
+        ARCH="amd64" \
+
+        GCLOUD_RW_API_KEY="glc_eyJvIjoiMTQ3MDk3MCIsIm4iOiJzdGFjay0xMzAzMjQ3LWFsbG95LXRlc3QtYWxsb3ktMjUyNTA3IiwiayI6IjlHMEdReTRlR241OUQ2MW83c2dNNzBIbCIsIm0iOnsiciI6InByb2QtZXUtbm9ydGgtMCJ9fQ==" \
+
+        /bin/sh -c "$(curl -fsSL https://storage.googleapis.com/cloud-onboarding/alloy/scripts/install-linux.sh)"
+      args:
+        executable: /bin/bash
+    - name: Check the Grafana alloy running status
+      command: systemctl status alloy.service
+      register: alloy_status_response
+      retries: 3
+      delay: 5
+      until: alloy_status_response.rc == 0
+      ignore_errors: yes
+    - name: Display the Grafana alloy status
+      debug:
+        var: alloy_status_response.stdout_lines
+      ignore_errors: yes
+    - name: DeployAlloy config file
+      copy:
+        dest: /etc/alloy/config.alloy
+        owner: root
+        group: root
+        mode: '0644'
+        content: |
+          remotecfg {
+            url            = "https://fleet-management-prod-016.grafana.net"
+            id             = "rev1-haproxy"
+            poll_frequency = "60s"
+
+            basic_auth {
+              username = "1303247"
+              password = "glc_eyJvIjoiMTQ3MDk3MCIsIm4iOiJzdGFjay0xMzAzMjQ3LWFsbG95LXRlc3QtYWxsb3ktMjUyNTA3IiwiayI6IjlHMEdReTRlR241OUQ2MW83c2dNNzBIbCIsIm0iOnsiciI6InByb2QtZXUtbm9ydGgtMCJ9fQ=="
+            }
+          }
+
+          prometheus.remote_write "metrics_service" {
+            endpoint {
+              url = "https://prometheus-prod-39-prod-eu-north-0.grafana.net/api/prom/push"
+              basic_auth {
+                username = "2530729"
+                password = "glc_eyJvIjoiMTQ3MDk3MCIsIm4iOiJzdGFjay0xMzAzMjQ3LWFsbG95LXRlc3QtYWxsb3ktMjUyNTA3IiwiayI6IjlHMEdReTRlR241OUQ2MW83c2dNNzBIbCIsIm0iOnsiciI6InByb2QtZXUtbm9ydGgtMCJ9fQ=="
+              }
+            }
+          }
+
+          loki.write "grafana_cloud_loki" {
+            endpoint {
+              url = "https://logs-prod-025.grafana.net/loki/api/v1/push"
+              basic_auth {
+                username = "1261041"
+                password = "glc_eyJvIjoiMTQ3MDk3MCIsIm4iOiJzdGFjay0xMzAzMjQ3LWFsbG95LXRlc3QtYWxsb3ktMjUyNTA3IiwiayI6IjlHMEdReTRlR241OUQ2MW83c2dNNzBIbCIsIm0iOnsiciI6InByb2QtZXUtbm9ydGgtMCJ9fQ=="
+              }
+            }
+          }
+
+          discovery.relabel "metrics_integrations_integrations_haproxy" {
+            targets = [{
+              __address__ = "127.0.0.1:80",
+            }]
+
+            rule {
+              target_label = "instance"
+              replacement  = constants.hostname
+            }
+          }
+
+          prometheus.scrape "metrics_integrations_integrations_haproxy" {
+            targets    = discovery.relabel.metrics_integrations_integrations_haproxy.output
+            forward_to = [prometheus.remote_write.metrics_service.receiver]
+            job_name   = "integrations/haproxy"
+          }
+
+    - name: Restart the Grafana alloy service
+      command: systemctl restart alloy.service
+      register: alloy_restart_status
+      ignore_errors: yes
+
+    - name: Check the Grafana alloy running status
+      command: systemctl status alloy.service
+      register: alloy_status_response
+      retries: 3
+      delay: 5
+      until: alloy_status_response.rc == 0
+      ignore_errors: yes
+
+    - name: Display the Grafana alloy status
+      debug:
+        var: alloy_status_response.stdout_lines
+      ignore_errors: yes
+
+    - name: Check the Grafana alloy logs
+      command: journalctl -u alloy.service -n 100 --no-pager
+      register: alloy_logs_response
+      ignore_errors: yes
+
+    - name: Display the Grafana alloy logs
+      debug:
+        var: alloy_logs_response.stdout_lines
+      ignore_errors: yes
+
+    - name: Check the Grafana alloy configuration file
+      command: cat /etc/alloy/config.alloy
+      register: alloy_config_response
+      ignore_errors: yes
+
+    - name: Display the Grafana alloy config
+      debug:
+        var: alloy_config_response.stdout_lines
+      ignore_errors: yes
+
+
+- name: Install snmp, snmpd, NGINX UDP load balancer config for SNMP
+  hosts: NGINX
+  become: yes
+  vars:
+    nginx_cfg_j2_src: nginx.conf.j2
+    nginx_cfg_path_dest: /etc/nginx/nginx.conf
+    protocol: udp
+    timeout: 1s
+    snmp_port: 6000
+    snmp_config_path: /etc/snmp/snmpd.conf
+    required_packages:
+      - nginx
+      - snmpd
+      - snmp
+      - snmp-mibs-downloader
+  tasks:
+    - name: Install required packages
+      apt:
+        name: "{{ item }}"
+        state: present
+        update_cache: yes
+      loop: "{{ required_packages }}"
+        
+    - name: Deploy NGINX stream config for SNMP UDP load balancing
+      template:
+        src: "{{ nginx_cfg_j2_src }}"
+        dest: "{{ nginx_cfg_path_dest }}"
+      notify: Reload NGINX
+      
+    - name: Check nginx is running
+      service:
+        name: nginx
+        state: started
+      register: nginx_running_status
+
+    - name: display nginx status
+      debug: 
+        var: nginx_running_status
+      
+  handlers:
+    - name: Reload NGINX
+      service:
+        name: nginx
+        state: reloaded
+      ignore_errors: yes
+  
+# Test haproxy(http)+haproxyWeb(stats)+haproxyMetrics(promex)+haproxyLogs      
+
+- name: Test HAProxy (http), HAProxy Web stats (STATS)+ Metrics (PROMEX) and HAProxy logs
+  hosts: HAproxy
+  become: yes
+  tasks:
+    - name: Gather HAProxy server public IP address
+      community.general.ipify_facts:
+    - name: Send HTTP request to HAProxy and collect response
+      uri:
+        url: "http://{{ ipify_public_ip }}"
+        return_content: yes
+      register: haproxy_response
+      ignore_errors: yes
+      retries: 3
+      delay: 2
+      until: haproxy_response.status == 200
+      loop: "{{ range(0, 3) | list }}"
+
+    - name: Display the HAProxy response
+      debug:
+        var: haproxy_response.results[item].content
+      ignore_errors: yes
+      with_items:
+        - 0
+        - 1
+        - 2 
+    
+    # web-stats/<STATS>      
+    - name: Send HTTP requests to HAProxy stats page and collect responses
+      uri:
+        url: "http://{{ ipify_public_ip }}/stats;csv"
+        url_username: admin
+        url_password: uipassword
+        force_basic_auth: yes
+        return_content: yes
+      register: haproxy_stats_response
+      ignore_errors: yes
+      retries: 3
+      delay: 2
+      until: haproxy_stats_response.status == 200
+
+    - name: Display the stats response content
+      debug:
+        var: haproxy_stats_response.content
+      ignore_errors: yes
+
+    # web-stats/<PROMEX>  
+    - name: Test the HAProxy metrics (promex) path
+      ansible.builtin.command: curl -s http://{{ ipify_public_ip }}/metrics
+      register: haproxy_metrics_path_result
+      ignore_errors: yes
+      retries: 3
+      delay: 5
+
+    - name: Display the HAProxy metrics (promex) response content
+      debug:
+        var: haproxy_metrics_path_result.stdout_lines
+      ignore_errors: yes
+
+    - name: Check HAProxy audit log lines
+      ansible.builtin.command: tail -n 20 /var/log/haproxy.log
+      register: haproxy_log_lines
+      ignore_errors: yes
+      
+    - name: Display the HAProxy log lines
+      debug:
+        var: haproxy_log_lines.stdout_lines
+      ignore_errors: yes
+
+    - name: Check HAProxy audit log lines
+      ansible.builtin.command: tail -n 20 /var/log/haproxy.log
+      register: haproxy_log_lines
+      ignore_errors: yes
+
+    - name: Display the HAProxy log lines
+      debug:
+        var: haproxy_log_lines.stdout_lines
+      ignore_errors: yes
+      
+# Test NGINX (snmp)      
+- name: Test NGINX (snmp) proxy
+  hosts: NGINX
+  become: yes
+  gather_facts: true
+  tasks:
+    - name: Gather NGINX public IP address
+      community.general.ipify_facts:
+
+    - name: Send SNMP request to NGINX server and collect responses
+      ansible.builtin.command: snmpget -v2c -c public {{ ipify_public_ip }}:1611 SNMPv2-MIB::sysName.0
+      register: nginx_response
+      ignore_errors: yes
+      retries: 3
+      delay: 2
+      loop: "{{ range(0, 3) | list }}"
+
+    - name: Display the NGINX response content
+      debug:
+        var: nginx_response.results[item].stdout
+      ignore_errors: yes
+      with_items:
+        - 0
+        - 1
+        - 2

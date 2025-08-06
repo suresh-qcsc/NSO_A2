@@ -1,0 +1,107 @@
+#!/bin/bash
+
+# Usage: cleanup <RC_FILE> <PROJECT>
+if [ "$#" -ne 2 ]; then
+    echo "Usage: $0 <RC_FILE> <PROJECT>"
+    exit 1
+fi
+
+RC_FILE="$1"
+PROJECT="$2"
+
+# Source the RC file
+source "$RC_FILE"
+
+# === CONFIGURATION ===
+NETWORK_NAME="${PROJECT}_network"
+SUBNET_NAME="${PROJECT}_subnet"
+ROUTER_NAME="${PROJECT}_router"
+SEC_GROUP="${PROJECT}_secgroup"
+INSTANCES=($(openstack server list --format value --column Name --status ACTIVE))
+PREFIXED_INSTANCES=()
+CURRENT_NODE_COUNT=$(echo "$INSTANCES" | wc -l)
+echo "Current ACTIVE nodes: $CURRENT_NODE_COUNT"
+
+for INSTANCE in "${INSTANCES[@]}"; do
+    echo "[*] instance: $INSTANCE..."
+    #PREFIXED_INSTANCES+=("${PROJECT}_${INSTANCE}")
+    PREFIXED_INSTANCES+=("${INSTANCE}")
+done
+
+# Function to echo with timestamp
+log() {
+    TIMESTAMP=$(date +"%Y-%m-%d %H:%M:%S")
+    echo "$TIMESTAMP $1"
+}
+
+log "Cleaning up $PROJECT using $RC_FILE"
+
+# === STEP 1: Remove Instances and Floating IPs ===
+log "We have ${#PREFIXED_INSTANCES[@]} nodes releasing them"
+for NAME in "${PREFIXED_INSTANCES[@]}"; do
+    log "Releasing $NAME"
+    # Get floating IPs attached to the server
+    FIPS=$(openstack server show "$NAME" -f value -c addresses 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | grep -vE '^10\.' || true)
+    # Remove floating IPs
+    for FIP in $FIPS; do
+        FIP_ID=$(openstack floating ip list --floating-ip-address "$FIP" -f value -c ID 2>/dev/null || true)
+        if [ -n "$FIP_ID" ]; then
+            openstack server remove floating ip "$NAME" "$FIP" 2>/dev/null || true
+            openstack floating ip delete "$FIP_ID" 2>/dev/null || true
+        fi
+    done
+    # Delete the server
+    openstack server delete "$NAME" 2>/dev/null || true
+done
+
+log "Waiting for nodes to disapear......."
+while openstack server list --name "${PROJECT}_" -f value -c ID 2>/dev/null | grep -q .; do
+    sleep 1
+done
+log "Nodes are gone."
+
+# === STEP 2: Remove Security Group ===
+log "Removing Security Groups"
+SG_ID=$(openstack security group list --name "$SEC_GROUP" -f value -c ID 2>/dev/null || true)
+if [ -n "$SG_ID" ]; then
+    openstack security group delete "$SG_ID" 2>/dev/null || true
+fi
+
+# === STEP 3: Remove Router ===
+log "Removing ${PROJECT}_router"
+if openstack router show "$ROUTER_NAME" &>/dev/null; then
+    openstack router remove subnet "$ROUTER_NAME" "$SUBNET_NAME" 2>/dev/null || true
+    openstack router unset --external-gateway "$ROUTER_NAME" 2>/dev/null || true
+    openstack router delete "$ROUTER_NAME" 2>/dev/null || true
+fi
+
+# === STEP 4: Remove Subnet ===
+log "Removing ${PROJECT}_subnet"
+if openstack subnet show "$SUBNET_NAME" &>/dev/null; then
+    openstack subnet delete "$SUBNET_NAME" 2>/dev/null || true
+fi
+
+# === STEP 5: Remove Network ===
+log "Removing ${PROJECT}_network"
+if openstack network show "$NETWORK_NAME" &>/dev/null; then
+    openstack network delete "$NETWORK_NAME" 2>/dev/null || true
+fi
+
+# === STEP 6: Remove Keypair ===
+log "Removing ${PROJECT}_key"
+KEY_NAME="${PROJECT}_key"
+if openstack keypair show "$KEY_NAME" &>/dev/null; then
+    openstack keypair delete "$KEY_NAME" 2>/dev/null || true
+fi
+
+# === STEP 7: Remove SSH Config File ===
+if [ -f "${PROJECT}_SSHconfig" ]; then
+    rm -f "${PROJECT}_SSHconfig"
+fi
+
+# === STEP 8: Final Check and Summary ===
+log "Checking for $PROJECT in project."
+echo "(network)(subnet)(router)(security groups)(keypairs)"
+echo ""
+log "Cleanup done."
+

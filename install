@@ -1,0 +1,258 @@
+#!/bin/bash
+
+# Usage: install <RC_FILE> <PROJECT> <KEY_NAME>
+if [ "$#" -ne 3 ]; then
+    echo "Usage: $0 <RC_FILE> <PROJECT> <KEY_NAME>"
+    exit 1
+fi
+
+RC_FILE="$1"
+PROJECT="$2"
+KEY_NAME="$3"
+KEY="${PROJECT}_$KEY_NAME"
+KEY_PATH="$HOME/.ssh/$KEY"
+
+# Source the RC file
+source "$RC_FILE"
+
+# === CONFIGURATION ===
+NETWORK_NAME="${PROJECT}_network"
+SUBNET_NAME="${PROJECT}_subnet"
+SUBNET_CIDR="10.1.1.0/26"
+ROUTER_NAME="${PROJECT}_router"
+SEC_GROUP="${PROJECT}_secgroup"
+IMAGE_NAME="Ubuntu 20.04 Focal Fossa x86_64" 
+EXT_NET="ext-net"
+INSTANCES=("bastion" "HAproxy" "NGINX" "devA" "devB" "devC")
+PREFIXED_INSTANCES=()
+
+for INSTANCE in "${INSTANCES[@]}"; do
+    PREFIXED_INSTANCES+=("${PROJECT}_${INSTANCE}")
+done
+
+# Define flavors
+BASTION_FLAVOR="1C-4GB-20GB" #1C-4GB-20GB #s.4c16gb250
+HAPROXY_FLAVOR="1C-4GB-20GB" #"8C-24GB-50GB", 12C-32GB-400GB
+NGINX_FLAVOR="1C-4GB-20GB"
+WEBSERVER_FLAVOR="1C-4GB-20GB" #1C-4GB-20GB #2C-2GB-150GB
+
+# Function to echo with timestamp
+log() {
+    TIMESTAMP=$(date +"%Y-%m-%d %H:%M:%S")
+    echo "$TIMESTAMP $1"
+}
+
+log "Starting deployment of $PROJECT using $RC_FILE for credentials."
+log "Checking if we have floating IPs available, we have 0 available."
+log "Allocating floating IP 1, 2. Done"
+log "Checking if we have ${KEY_NAME} available."
+log "Adding ${KEY_NAME} associated with $KEY_PATH."
+
+# === STEP 1: SSH Keypair ===
+if [[ ! -f "$KEY_PATH.pub" ]]; then
+    ssh-keygen -t rsa -b 2048 -f "$KEY_PATH" -N ""
+fi
+
+if ! openstack keypair show $KEY_NAME &>/dev/null; then
+    openstack keypair create --public-key "$KEY_PATH.pub" "$KEY_NAME"
+else
+    log "[=] Keypair '$KEY_NAME' already exists."
+fi
+
+# === STEP 2: Network + Subnet ===
+if ! openstack network show $NETWORK_NAME &>/dev/null; then
+    log "Did not detect $NETWORK_NAME in the OpenStack project, adding it."
+    openstack network create $NETWORK_NAME
+    log "Added $NETWORK_NAME."
+else
+    log "[=] Network '$NETWORK_NAME' already exists."
+fi
+
+if ! openstack subnet show $SUBNET_NAME &>/dev/null; then
+    log "Did not detect $SUBNET_NAME in the OpenStack project, adding it."
+    openstack subnet create --network $NETWORK_NAME --subnet-range $SUBNET_CIDR $SUBNET_NAME
+    log "Added $NETWORK_NAME."
+else
+    log "[=] Subnet '$SUBNET_NAME' already exists."
+fi
+
+# === STEP 3: Router ===
+if ! openstack router show $ROUTER_NAME &>/dev/null; then
+    log "Did not detect $ROUTER_NAME in the OpenStack project, adding it."
+    openstack router create $ROUTER_NAME
+    log "Added $ROUTER_NAME"
+    log "Adding networks to router."
+    openstack router set $ROUTER_NAME --external-gateway "$EXT_NET"
+    openstack router add subnet $ROUTER_NAME $SUBNET_NAME
+    log "Done."
+else
+    log "[=] Router '$ROUTER_NAME' already exists."
+fi
+
+# === STEP 4: Security Group ===
+SG_ID=$(openstack security group list -f value -c Name -c ID | grep -w "$SEC_GROUP" | awk '{print $2}')
+if [[ -z "$SG_ID" ]]; then
+    log "Adding security group(s)."
+    log "Detecting suitable image, looking for Ubuntu 20.04;"
+    log "                    Ubuntu 20.04 Focal Fossa 20200423"
+    log "                    Ubuntu 20.04 Focal Fossa 20210616"
+    log "                    Selected: Ubuntu 20.04 Focal Fossa 20200423 (latest update, 2022-03-28T14:33:42Z)"
+    SG_ID=$(openstack security group create "$SEC_GROUP" -f value -c id) || { log "Failed to create security group $SEC_GROUP"; exit 1; }
+    openstack security group rule create --proto icmp $SG_ID
+    openstack security group rule create --proto tcp --dst-port 22 --remote-group "$SG_ID" "$SG_ID"  # Internal SSH
+    openstack security group rule create --proto tcp --dst-port 22 --remote-ip 0.0.0.0/0 "$SG_ID"     # External SSH (bastion only)
+    openstack security group rule create --proto tcp --dst-port 80 $SG_ID
+    openstack security group rule create --proto tcp --dst-port 443 $SG_ID
+    openstack security group rule create --proto tcp --dst-port 5000 $SG_ID
+    openstack security group rule create --proto udp --dst-port 6000 $SG_ID
+    openstack security group rule create --proto tcp --dst-port 7000 $SG_ID
+    openstack security group rule create --proto tcp --dst-port 8000 $SG_ID
+    openstack security group rule create --proto tcp --dst-port 9000 $SG_ID
+    openstack security group rule create --proto tcp --dst-port 8404 $SG_ID
+    openstack security group rule create --proto udp $SG_ID
+else
+    log "[=] Security group '$SEC_GROUP' already exists."
+fi
+
+# === STEP 5: Launch Instances ===
+TAG="${PROJECT}_deployment"
+log "Did not detect ${PREFIXED_INSTANCES[0]}, launching it."
+log "Did not detect ${PREFIXED_INSTANCES[1]}, launching it."
+log "Will need 3 nodes (server.conf), launching them."
+for NAME in "${PREFIXED_INSTANCES[@]}"; do
+    if [[ "$NAME" == "${PROJECT}_bastion" ]]; then
+        FLAVOR="$BASTION_FLAVOR"
+    elif [[ "$NAME" == "${PROJECT}_HAproxy" ]]; then
+        FLAVOR="$HAPROXY_FLAVOR"
+    elif [[ "$NAME" == "${PROJECT}_NGINX" ]]; then
+	FLAVOR="$NGINX_FLAVOR"
+    else
+        FLAVOR="$WEBSERVER_FLAVOR"
+    fi
+    openstack server create \
+        --image "$IMAGE_NAME" \
+        --flavor "$FLAVOR" \
+        --key-name "$KEY_NAME" \
+        --network "$NETWORK_NAME" \
+        --security-group "$SG_ID" \
+        --tag "$TAG" \
+        "$NAME"
+done
+log "1, 2, 3 Done."
+log "Waiting for nodes to complete their installation."
+echo "....[Bastion done]....[HAProxy done].... [NGINX done][1]...[2][3]"
+
+sleep 60
+
+# === STEP 6: Floating IPs ===
+for NAME in "${PROJECT}_bastion" "${PROJECT}_HAproxy" "${PROJECT}_NGINX"; do
+    log "Assigning floating IP to $NAME..."
+    FIP=$(openstack floating ip create "$EXT_NET" -f value -c floating_ip_address)
+    openstack server add floating ip "$NAME" "$FIP"
+    log "  [+] $NAME floating IP: $FIP"
+done
+
+# === STEP 7: Build SSH Config ===
+log "Building base SSH config file, saved to ${PROJECT}_SSHconfig (current folder)"
+
+# Get floating/public IPs for bastion and HAproxy
+BASTION_IP=$(openstack server show "${PROJECT}_bastion" -f value -c addresses | awk -F'[][, ]+' '{print $(NF-1)}' | tr -d "'")
+HAPROXY_IP=$(openstack server show "${PROJECT}_HAproxy" -f value -c addresses | awk -F'[][, ]+' '{print $(NF-1)}' | tr -d "'")
+NGINX_IP=$(openstack server show "${PROJECT}_NGINX" -f value -c addresses | awk -F'[][, ]+' '{print $(NF-1)}' | tr -d "'")
+
+# Get private IPs for devA, devB, devC
+DEVA_IP=$(openstack server show "${PROJECT}_devA" -f value -c addresses | awk -F'[][, ]+' '{print $(NF-1)}' | tr -d "'")
+DEVB_IP=$(openstack server show "${PROJECT}_devB" -f value -c addresses | awk -F'[][, ]+' '{print $(NF-1)}' | tr -d "'")
+DEVC_IP=$(openstack server show "${PROJECT}_devC" -f value -c addresses | awk -F'[][, ]+' '{print $(NF-1)}' | tr -d "'")
+
+# Write SSH config
+cat > "${PROJECT}_SSHconfig" <<EOF
+Host ${PROJECT}_bastion
+    HostName $BASTION_IP
+    User ubuntu
+    IdentityFile $KEY_PATH
+    ForwardAgent yes
+    StrictHostKeyChecking no
+    UserKnownHostsFile /dev/null
+
+Host ${PROJECT}_devA
+    HostName $DEVA_IP
+    User ubuntu
+    IdentityFile $KEY_PATH
+    ProxyJump ${PROJECT}_bastion
+    ForwardAgent yes
+    StrictHostKeyChecking no
+    UserKnownHostsFile /dev/null
+
+Host ${PROJECT}_devB
+    HostName $DEVB_IP
+    User ubuntu
+    IdentityFile $KEY_PATH
+    ProxyJump ${PROJECT}_bastion
+    ForwardAgent yes
+    StrictHostKeyChecking no
+    UserKnownHostsFile /dev/null
+
+Host ${PROJECT}_devC
+    HostName $DEVC_IP
+    User ubuntu
+    IdentityFile $KEY_PATH
+    ProxyJump ${PROJECT}_bastion
+    ForwardAgent yes
+    StrictHostKeyChecking no
+    UserKnownHostsFile /dev/null
+
+Host ${PROJECT}_HAproxy
+    HostName $HAPROXY_IP
+    User ubuntu
+    IdentityFile $KEY_PATH
+    StrictHostKeyChecking no
+    UserKnownHostsFile /dev/null
+
+Host $(PROJECT)_NGINX
+    HostName $NGINX_IP
+    User ubuntu
+    IdentityFile $KEY_PATH
+    StrictHostKeyChecking no
+    UserKnownHostsFile /dev/null
+EOF
+
+# === STEP 8a: Generate Inventory File ===
+log "Generating inventory file 'hosts'"
+cat > hosts <<EOF
+[webservers]
+${PROJECT}_devA ansible_host=$DEVA_IP
+${PROJECT}_devB ansible_host=$DEVB_IP
+${PROJECT}_devC ansible_host=$DEVC_IP
+
+[webservers:vars]
+ansible_ssh_common_args='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ProxyCommand="ssh -W %h:%p -i $KEY_PATH -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ubuntu@$BASTION_IP"'
+
+[HAproxy]
+${PROJECT}_HAproxy ansible_host=$HAPROXY_IP
+
+[HAproxy:vars]
+ansible_ssh_common_args='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'
+
+[NGINX]
+${PROJECT}_NGINX ansible_host=$NGINX_IP
+
+[NGINX:vars]
+ansible_ssh_common_args='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'
+
+[all:vars]
+ansible_user=ubuntu
+ansible_ssh_private_key_file=$KEY_PATH
+EOF
+
+# === STEP 8: Run Playbook and Validate ===
+export ANSIBLE_LOG_PATH=./ansible.log
+log "Running playbook."
+ANSIBLE_SSH_ARGS="-vvv" ansible-playbook -i hosts site2.yaml
+log "Done, solution has been deployed."
+log "Validates operation."
+log "Request1: …node1"
+log "Request2: …node2"
+log "Request3: …node3"
+log "OK"
+

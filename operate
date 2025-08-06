@@ -1,0 +1,204 @@
+#!/bin/bash
+
+# Usage: operate <RC_FILE> <PROJECT> <KEY_NAME>
+if [ "$#" -ne 3 ]; then
+    echo "Usage: $0 <RC_FILE> <PROJECT> <KEY_NAME>"
+    exit 1
+fi
+
+RC_FILE="$1"
+PROJECT="$2"
+KEY_NAME="$3"
+KEY="${PROJECT}_$KEY_NAME"
+KEY_PATH="$HOME/.ssh/$KEY"
+
+# Source the RC file to get OpenStack credentials
+source "$RC_FILE"
+
+# === CONFIGURATION ===
+NETWORK_NAME="${PROJECT}_network"
+SUBNET_NAME="${PROJECT}_subnet"
+SUBNET_CIDR="10.1.1.0/26"
+ROUTER_NAME="${PROJECT}_router"
+SEC_GROUP="${PROJECT}_secgroup"
+IMAGE_NAME="Ubuntu 20.04 Focal Fossa x86_64"
+FLAVOR="1C-4GB-20GB"
+EXT_NET="ext-net"
+TAG="${PROJECT}_deployment"
+SSH_CONFIG="${PROJECT}_SSHconfig"
+INVENTORY_FILE="hosts"
+
+# Function to log with timestamp
+log() {
+    TIMESTAMP=$(date +"%Y-%m-%d %H:%M:%S")
+    echo "$TIMESTAMP $1"
+}
+
+# Function to rebuild SSH config and inventory files
+rebuild_configs() {
+    log "Rebuilding configuration files..."
+    
+    # List all ACTIVE nodes
+    ALL_NODES=$(openstack server list --format value --column Name --status ACTIVE)
+    
+    # Get IPs
+    declare -A NODE_IPS
+    for NODE in $ALL_NODES; do
+        IP=$(openstack server show "$NODE" -f value -c addresses | awk -F'[][, ]+' '{print $(NF-1)}' | tr -d "'")
+        NODE_IPS["$NODE"]="$IP"
+    done
+
+    # Get critical IPs
+    BASTION_IP="${NODE_IPS["${PROJECT}_bastion"]}"
+    HAPROXY_IP="${NODE_IPS["${PROJECT}_HAproxy"]}"
+    NGINX_IP="${NODE_IPS["${PROJECT}_NGINX"]}"
+
+# Rebuild SSH config
+cat > "${PROJECT}_SSHconfig" <<EOF
+Host ${PROJECT}_bastion
+    HostName $BASTION_IP
+    User ubuntu
+    IdentityFile $KEY_PATH
+    ForwardAgent yes
+    StrictHostKeyChecking no
+    UserKnownHostsFile /dev/null
+
+Host ${PROJECT}_HAproxy
+    HostName $HAPROXY_IP
+    User ubuntu
+    IdentityFile $KEY_PATH
+    StrictHostKeyChecking no
+    UserKnownHostsFile /dev/null
+
+Host ${PROJECT}_NGINX
+    HostName $NGINX_IP
+    User ubuntu
+    IdentityFile $KEY_PATH
+    StrictHostKeyChecking no
+    UserKnownHostsFile /dev/null
+EOF
+    # Add webservers
+    for NODE in $ALL_NODES; do
+        if [[ "$NODE" != "${PROJECT}_bastion" && "$NODE" != "${PROJECT}_HAproxy" && "$NODE" != "${PROJECT}_NGINX" ]]; then
+            cat >> "${PROJECT}_SSHconfig" <<EOF
+
+Host $NODE
+    HostName ${NODE_IPS["$NODE"]}
+    User ubuntu
+    IdentityFile $KEY_PATH
+    ProxyJump ${PROJECT}_bastion
+    ForwardAgent yes
+    StrictHostKeyChecking no
+    UserKnownHostsFile /dev/null
+EOF
+        fi
+    done
+
+    # Rebuild inventory
+    cat > "$INVENTORY_FILE" <<EOF
+[webservers]
+EOF
+
+    for NODE in $ALL_NODES; do
+        if [[ "$NODE" != "${PROJECT}_bastion" && "$NODE" != "${PROJECT}_HAproxy" && "$NODE" != "${PROJECT}_NGINX" ]]; then
+            echo "$NODE ansible_host=${NODE_IPS["$NODE"]}" >> "$INVENTORY_FILE"
+        fi
+    done
+
+    # Use unique name for HAproxy host
+    cat >> "$INVENTORY_FILE" <<EOF
+
+[HAproxy]
+${PROJECT}_HAproxy ansible_host=$HAPROXY_IP
+
+[HAproxy:vars]
+ansible_ssh_common_args='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'
+
+[NGINX]
+${PROJECT}_NGINX ansible_host=$NGINX_IP
+
+[NGINX:vars]
+ansible_ssh_common_args='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'
+
+[webservers:vars]
+ansible_ssh_common_args='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ProxyCommand="ssh -W %h:%p -i $KEY_PATH -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ubuntu@$BASTION_IP"'
+
+[all:vars]
+ansible_user=ubuntu
+ansible_ssh_private_key_file=$KEY_PATH
+EOF
+}
+
+# Function to detect node count changes and reconcile state
+detect_node_change() {
+    # Read expected node count from server.conf or default
+    if [ -f "servers.conf" ]; then
+        expected_node_count=$(grep -oP '\d+' servers.conf)
+        [ -z "$expected_node_count" ] && expected_node_count=3
+    else
+        expected_node_count=3
+    fi
+    log "Expected number of nodes: $expected_node_count"
+
+    # List ACTIVE nodes (excluding HAproxy, bastion and NGINX )
+    CURRENT_NODES=$(openstack server list --format value --column Name --status ACTIVE | grep -v -E "${PROJECT}_HAproxy|${PROJECT}_bastion|${PROJECT}_NGINX" | sort)
+    node_count=$(echo "$CURRENT_NODES" | wc -l)
+    log "Current ACTIVE nodes (excluding HAproxy/bastion/NGINX): $node_count"
+
+    # Launch new nodes if count < expected
+    if [ "$node_count" -lt "$expected_node_count" ]; then
+        log "Launching $((expected_node_count - node_count)) new node(s)..."
+        for ((i=node_count; i<expected_node_count; i++)); do
+            RAND_NUM=$((RANDOM % 100 + 1))
+            NEW_NODE="${PROJECT}_dev${RAND_NUM}"
+            log "Creating node: $NEW_NODE"
+            openstack server create \
+                --image "$IMAGE_NAME" \
+                --flavor "$FLAVOR" \
+                --key-name "$KEY_NAME" \
+                --network "$NETWORK_NAME" \
+                --security-group "$SEC_GROUP" \
+                --tag "$TAG" \
+                "$NEW_NODE"
+            while ! openstack server show "$NEW_NODE" -f value -c status | grep -q "ACTIVE"; do
+                sleep 5
+                log "Waiting for $NEW_NODE to become ACTIVE..."
+            done
+            log "$NEW_NODE is ACTIVE"
+        done
+        return 1  # Node change detected
+
+    # Delete extra nodes if count > expected
+    elif [ "$node_count" -gt "$expected_node_count" ]; then
+        extra=$((node_count - expected_node_count))
+        log "Deleting $extra extra node(s)..."
+        NODES_TO_DELETE=$(echo "$CURRENT_NODES" | shuf -n "$extra")
+        for NODE in $NODES_TO_DELETE; do
+            log "Deleting: $NODE"
+            openstack server delete "$NODE"
+        done
+        return 1  # Node change detected
+    fi
+
+    return 0  # No change detected
+}
+
+# Main process
+export ANSIBLE_LOG_PATH=./ansible.log
+log "Starting node management system..."
+
+while true; do
+    if ! detect_node_change; then
+        log "No node changes detected. Sleeping..."
+        log "Node changes detected. Rebuilding configs and running playbook..."
+        rebuild_configs
+        sleep 20
+        log "Running Ansible playbook..."
+        ANSIBLE_SSH_ARGS="-vvv" ansible-playbook -i hosts site2.yaml
+        log "Playbook execution completed."
+    else
+        log "No node changes detected. Sleeping..."
+    fi
+    sleep 30
+done
+
