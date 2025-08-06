@@ -194,7 +194,7 @@ while true; do
         rebuild_configs
         sleep 20
         log "Running Ansible playbook..."
-        ANSIBLE_SSH_ARGS="-vvv" ansible-playbook -i hosts site2.yaml
+        ANSIBLE_SSH_ARGS="-vvv" ansible-playbook -i hosts site.yaml
         log "Playbook execution completed."
     else
         log "No node changes detected. Sleeping..."
