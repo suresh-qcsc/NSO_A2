@@ -123,6 +123,12 @@ ansible_ssh_common_args='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/
 [webservers:vars]
 ansible_ssh_common_args='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ProxyCommand="ssh -W %h:%p -i $KEY_PATH -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ubuntu@$BASTION_IP"'
 
+[bastion]
+${PROJECT}_bastion ansible_host=$BASTION_IP
+
+[bastion:vars]
+ansible_ssh_common_args='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'
+
 [all:vars]
 ansible_user=ubuntu
 ansible_ssh_private_key_file=$KEY_PATH
@@ -138,6 +144,7 @@ detect_node_change() {
     else
         expected_node_count=3
     fi
+
     log "Expected number of nodes: $expected_node_count"
 
     # List ACTIVE nodes (excluding HAproxy, bastion and NGINX )
@@ -192,7 +199,6 @@ while true; do
         log "No node changes detected. Sleeping..."
         log "Node changes detected. Rebuilding configs and running playbook..."
         rebuild_configs
-        sleep 20
         log "Running Ansible playbook..."
         ANSIBLE_SSH_ARGS="-vvv" ansible-playbook -i hosts site.yaml
         log "Playbook execution completed."

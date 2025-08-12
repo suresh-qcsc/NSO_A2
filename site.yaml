@@ -18,6 +18,8 @@
       - snmpd
       - snmp
       - snmp-mibs-downloader
+      - apache2-utils
+      - httperf
   tasks:
     - name: Install required packages
       apt:
@@ -64,7 +66,6 @@
         line: agentaddress  0.0.0.0:6000
         create: yes
       register: snmpd_agentaddress_changed
-
 
     - name: Check snmpd config File
       ansible.builtin.shell: cat "{{ snmp_config_path }}"
@@ -115,6 +116,9 @@
     haproxy_stats_refresh_timeout: 1s
     haproxy_stats_uri: /stats
     haproxy_stats_auth_username: admin
+    required_packages:
+      - apache2-utils
+      - httperf
   tasks:
     - name: Add HAProxy 2.9 PPA
       apt_repository:
@@ -126,7 +130,15 @@
       apt:
         name: haproxy=2.9.*
         update_cache: yes
-        
+
+    - name: Install performance testing required packages
+      apt:
+        name: "{{ item }}"
+        state: present
+        update_cache: yes
+      loop: "{{ required_packages }}"
+      ignore_errors: yes
+
     - name: Deploy stats web page password file
       copy:
         src: uipassword
@@ -419,6 +431,7 @@
   tasks:
     - name: Gather HAProxy server public IP address
       community.general.ipify_facts:
+
     - name: Send HTTP request to HAProxy and collect response
       uri:
         url: "http://{{ ipify_public_ip }}"
@@ -438,7 +451,7 @@
         - 0
         - 1
         - 2 
-    
+
     # web-stats/<STATS>      
     - name: Send HTTP requests to HAProxy stats page and collect responses
       uri:
@@ -460,7 +473,7 @@
 
     # web-stats/<PROMEX>  
     - name: Test the HAProxy metrics (promex) path
-      ansible.builtin.command: curl -s http://{{ ipify_public_ip }}/metrics
+      ansible.builtin.command: curl -s http://{{ ipify_public_ip }}:80/metrics
       register: haproxy_metrics_path_result
       ignore_errors: yes
       retries: 3
@@ -481,8 +494,56 @@
         var: haproxy_log_lines.stdout_lines
       ignore_errors: yes
 
+
+- name: Benchmarking the webserver using Apache Benchmark (ab) tests on the backend servers
+  hosts: webservers
+  become: yes
+  tasks:
+
+    - name: Send Apache Benchmark (ab) loads to webservers and collect response
+      ansible.builtin.shell: ab -k -c 1000 -n 1200 -s 30 -g ab_bastion_gnuplot.tsv http://{{ ansible_default_ipv4.address }}:5000/
+      register: ab_ws_test_result
+
+    - name: Display the ab test response
+      debug:
+        var: ab_ws_test_result.stdout_lines
+      ignore_errors: yes
+
+
+- name: Benchmarking the HAProxy Load Balancer using Apache Benchmark (ab) tests on the Bastion server
+  hosts: bastion
+  become: yes
+  tasks:
+    - name: Gather HAProxy server public IP address
+      community.general.ipify_facts:
+
+    - name: Send Apache Benchmark (ab) loads to HAProxy and collect response
+      ansible.builtin.shell: ab -k -c 1000 -n 1200 -s 30 -g ab_bastion_gnuplot.tsv http://{{ ipify_public_ip }}/
+      register: ab_bastion_test_result
+
+    - name: Display the ab test response
+      debug:
+        var: ab_bastion_test_result.stdout_lines
+      ignore_errors: yes
+
+- name: Benchmarking the HAProxy Load Balancer using Apache Benchmark (ab) tests on the HAProxy server
+  hosts: HAproxy
+  become: yes
+  tasks:
+    - name: Gather HAProxy server public IP address
+      community.general.ipify_facts:
+
+    - name: Send Apache Benchmark (ab) loads to HAProxy and collect response
+      ansible.builtin.shell: ab -k -c 1000 -n 1200 -s 30 -g ab_bastion_gnuplot.tsv http://{{ ipify_public_ip }}/
+      register: ab_haproxy_test_result
+
+    - name: Display the ab test response
+      debug:
+        var: ab_haproxy_test_result.stdout_lines
+      ignore_errors: yes
+
     - name: Check HAProxy audit log lines
-      ansible.builtin.command: tail -n 20 /var/log/haproxy.log
+      ansible.builtin.command: tail -n 30 /var/log/haproxy.log
       register: haproxy_log_lines
       ignore_errors: yes
 
@@ -490,7 +551,7 @@
       debug:
         var: haproxy_log_lines.stdout_lines
       ignore_errors: yes
-      
+
 # Test NGINX (snmp)      
 - name: Test NGINX (snmp) proxy
   hosts: NGINX
@@ -516,3 +577,4 @@
         - 0
         - 1
         - 2
+

@@ -7,7 +7,8 @@ global
     # bind threads to cpu cores
     cpu-map 1/all 0-0 # bind all threads to CPU 0 #syntax:cpu-map 1/1-<Number Of CPU Cores> 0-<Number of CPU Cores - 1>
     # define logging
-    log /dev/log local0 info
+    log /dev/log local0 debug
+    #log /dev/log local0 info
     #log /dev/log local0 emerg
     #log /dev/log local1 alert
     #log /dev/log local2 crit
@@ -24,13 +25,13 @@ global
     stats maxconn 20
     stats timeout 30000
     daemon
-    maxconn 512
+    maxconn 3000
         
 defaults
     mode http
-    timeout connect 5000ms
-    timeout client 5000ms
-    timeout server 5000ms
+    timeout connect 5s
+    timeout client 50s
+    timeout server 50s
     errorfile 400 /etc/haproxy/errors/400.http
     errorfile 403 /etc/haproxy/errors/403.http
     errorfile 408 /etc/haproxy/errors/408.http
@@ -60,7 +61,7 @@ frontend haproxy_frontend
     #option logasap
     #define custom log-format
 {% if haproxy_custom_log_format_bool %}
-    log-format "%ci:%cp [%tr] %ft %b/%s %TR/%Tw/%Tc/%Tr/%Ta %ST %B %CC %CS %tsc %ac/%fc/%bc/%sc/%rc %sq/%bq %hr %hs %{+Q}r %[http_first_req] cpu_calls:%[cpu_calls] cpu_ns_tot:%[cpu_ns_tot] cpu_ns_avg:%[cpu_ns_avg] lat_ns_tot:%[lat_ns_tot] lat_ns_avg:%[lat_ns_avg]"
+    log-format "%ci:%cp [%tr] %ft %b/%s %T/%Th/%Ti/%TR/%Tq/%Tw/%Tc/%Tr/%Td/%Tl/%Ta/%Tt/%Ts %ST %B %CC %CS %tsc %ac/%fc/%bc/%sc/%rc %sq/%bq %hr %hs %{+Q}r %[http_first_req] cpu_calls:%[cpu_calls] cpu_ns_tot:%[cpu_ns_tot] cpu_ns_avg:%[cpu_ns_avg] lat_ns_tot:%[lat_ns_tot] lat_ns_avg:%[lat_ns_avg]"
 {% endif %}
     default_backend haproxy_backend
     
@@ -68,7 +69,7 @@ backend haproxy_backend
     retry-on all-retryable-errors # This works when conn-failure, empty-response, junk-response, response-timeout, rtt-rejected, 500, 502, 503, and 504
     retries 3
     {% for host in groups['webservers'] %}
-         server {{ host }} {{ hostvars[host]['ansible_default_ipv4']['address'] }}:5000 check maxconn 64
+         server {{ host }} {{ hostvars[host]['ansible_default_ipv4']['address'] }}:5000 check maxconn 1000
     {% endfor %}
 
 

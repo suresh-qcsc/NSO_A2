@@ -1,0 +1,48 @@
+Host rev1_bastion
+    HostName 86.107.49.66
+    User ubuntu
+    IdentityFile /home/ubuntu/.ssh/rev1_key105
+    ForwardAgent yes
+    StrictHostKeyChecking no
+    UserKnownHostsFile /dev/null
+
+Host rev1_devA
+    HostName 10.1.1.45
+    User ubuntu
+    IdentityFile /home/ubuntu/.ssh/rev1_key105
+    ProxyJump rev1_bastion
+    ForwardAgent yes
+    StrictHostKeyChecking no
+    UserKnownHostsFile /dev/null
+
+Host rev1_devB
+    HostName 10.1.1.22
+    User ubuntu
+    IdentityFile /home/ubuntu/.ssh/rev1_key105
+    ProxyJump rev1_bastion
+    ForwardAgent yes
+    StrictHostKeyChecking no
+    UserKnownHostsFile /dev/null
+
+Host rev1_devC
+    HostName 10.1.1.9
+    User ubuntu
+    IdentityFile /home/ubuntu/.ssh/rev1_key105
+    ProxyJump rev1_bastion
+    ForwardAgent yes
+    StrictHostKeyChecking no
+    UserKnownHostsFile /dev/null
+
+Host rev1_HAproxy
+    HostName 188.240.223.140
+    User ubuntu
+    IdentityFile /home/ubuntu/.ssh/rev1_key105
+    StrictHostKeyChecking no
+    UserKnownHostsFile /dev/null
+
+Host _NGINX
+    HostName 185.62.207.155
+    User ubuntu
+    IdentityFile /home/ubuntu/.ssh/rev1_key105
+    StrictHostKeyChecking no
+    UserKnownHostsFile /dev/null

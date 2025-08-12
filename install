@@ -15,7 +15,7 @@ KEY_PATH="$HOME/.ssh/$KEY"
 # Source the RC file
 source "$RC_FILE"
 
-# === CONFIGURATION ===
+# CONFIGURATION
 NETWORK_NAME="${PROJECT}_network"
 SUBNET_NAME="${PROJECT}_subnet"
 SUBNET_CIDR="10.1.1.0/26"
@@ -31,10 +31,10 @@ for INSTANCE in "${INSTANCES[@]}"; do
 done
 
 # Define flavors
-BASTION_FLAVOR="1C-4GB-20GB" #1C-4GB-20GB #s.4c16gb250
-HAPROXY_FLAVOR="1C-4GB-20GB" #"8C-24GB-50GB", 12C-32GB-400GB
+BASTION_FLAVOR="1C-4GB-20GB" #8C-24GB-50GB
+HAPROXY_FLAVOR="1C-4GB-20GB" 
 NGINX_FLAVOR="1C-4GB-20GB"
-WEBSERVER_FLAVOR="1C-4GB-20GB" #1C-4GB-20GB #2C-2GB-150GB
+WEBSERVER_FLAVOR="1C-4GB-20GB"
 
 # Function to echo with timestamp
 log() {
@@ -48,7 +48,7 @@ log "Allocating floating IP 1, 2. Done"
 log "Checking if we have ${KEY_NAME} available."
 log "Adding ${KEY_NAME} associated with $KEY_PATH."
 
-# === STEP 1: SSH Keypair ===
+# STEP 1: SSH Keypair
 if [[ ! -f "$KEY_PATH.pub" ]]; then
     ssh-keygen -t rsa -b 2048 -f "$KEY_PATH" -N ""
 fi
@@ -59,7 +59,7 @@ else
     log "[=] Keypair '$KEY_NAME' already exists."
 fi
 
-# === STEP 2: Network + Subnet ===
+# STEP 2: Network + Subnet
 if ! openstack network show $NETWORK_NAME &>/dev/null; then
     log "Did not detect $NETWORK_NAME in the OpenStack project, adding it."
     openstack network create $NETWORK_NAME
@@ -76,7 +76,7 @@ else
     log "[=] Subnet '$SUBNET_NAME' already exists."
 fi
 
-# === STEP 3: Router ===
+# STEP 3: Router
 if ! openstack router show $ROUTER_NAME &>/dev/null; then
     log "Did not detect $ROUTER_NAME in the OpenStack project, adding it."
     openstack router create $ROUTER_NAME
@@ -89,7 +89,7 @@ else
     log "[=] Router '$ROUTER_NAME' already exists."
 fi
 
-# === STEP 4: Security Group ===
+# STEP 4: Security Group
 SG_ID=$(openstack security group list -f value -c Name -c ID | grep -w "$SEC_GROUP" | awk '{print $2}')
 if [[ -z "$SG_ID" ]]; then
     log "Adding security group(s)."
@@ -114,7 +114,7 @@ else
     log "[=] Security group '$SEC_GROUP' already exists."
 fi
 
-# === STEP 5: Launch Instances ===
+# STEP 5: Launch Instances
 TAG="${PROJECT}_deployment"
 log "Did not detect ${PREFIXED_INSTANCES[0]}, launching it."
 log "Did not detect ${PREFIXED_INSTANCES[1]}, launching it."
@@ -144,7 +144,7 @@ echo "....[Bastion done]....[HAProxy done].... [NGINX done][1]...[2][3]"
 
 sleep 60
 
-# === STEP 6: Floating IPs ===
+# STEP 6: Floating IPs
 for NAME in "${PROJECT}_bastion" "${PROJECT}_HAproxy" "${PROJECT}_NGINX"; do
     log "Assigning floating IP to $NAME..."
     FIP=$(openstack floating ip create "$EXT_NET" -f value -c floating_ip_address)
@@ -152,7 +152,7 @@ for NAME in "${PROJECT}_bastion" "${PROJECT}_HAproxy" "${PROJECT}_NGINX"; do
     log "  [+] $NAME floating IP: $FIP"
 done
 
-# === STEP 7: Build SSH Config ===
+# STEP 7: Build SSH Config
 log "Building base SSH config file, saved to ${PROJECT}_SSHconfig (current folder)"
 
 # Get floating/public IPs for bastion and HAproxy
@@ -217,7 +217,7 @@ Host $(PROJECT)_NGINX
     UserKnownHostsFile /dev/null
 EOF
 
-# === STEP 8a: Generate Inventory File ===
+# STEP 8a: Generate Inventory File
 log "Generating inventory file 'hosts'"
 cat > hosts <<EOF
 [webservers]
@@ -240,12 +240,18 @@ ${PROJECT}_NGINX ansible_host=$NGINX_IP
 [NGINX:vars]
 ansible_ssh_common_args='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'
 
+[bastion]
+${PROJECT}_bastion ansible_host=$BASTION_IP
+
+[bastion:vars]
+ansible_ssh_common_args='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'
+
 [all:vars]
 ansible_user=ubuntu
 ansible_ssh_private_key_file=$KEY_PATH
 EOF
 
-# === STEP 8: Run Playbook and Validate ===
+# STEP 8: Run Playbook and Validate
 export ANSIBLE_LOG_PATH=./ansible.log
 log "Running playbook."
 ANSIBLE_SSH_ARGS="-vvv" ansible-playbook -i hosts site.yaml

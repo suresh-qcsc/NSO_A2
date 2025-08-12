@@ -1,23 +1,29 @@
 [webservers]
-rev1_devA ansible_host=10.1.1.38
-rev1_devB ansible_host=10.1.1.10
-rev1_devC ansible_host=10.1.1.58
+rev1_devA ansible_host=10.1.1.45
+rev1_devB ansible_host=10.1.1.22
+rev1_devC ansible_host=10.1.1.9
 
 [webservers:vars]
-ansible_ssh_common_args='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ProxyCommand="ssh -W %h:%p -i /home/ubuntu/.ssh/rev1_key75 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ubuntu@188.240.223.200"'
+ansible_ssh_common_args='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ProxyCommand="ssh -W %h:%p -i /home/ubuntu/.ssh/rev1_key105 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ubuntu@86.107.49.66"'
 
 [HAproxy]
-rev1_HAproxy ansible_host=188.240.223.88
+rev1_HAproxy ansible_host=188.240.223.140
 
 [HAproxy:vars]
 ansible_ssh_common_args='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'
 
 [NGINX]
-rev1_NGINX ansible_host=188.240.223.8
+rev1_NGINX ansible_host=185.62.207.155
 
 [NGINX:vars]
 ansible_ssh_common_args='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'
 
+[bastion]
+rev1_bastion ansible_host=86.107.49.66
+
+[bastion:vars]
+ansible_ssh_common_args='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'
+
 [all:vars]
 ansible_user=ubuntu
-ansible_ssh_private_key_file=/home/ubuntu/.ssh/rev1_key75
+ansible_ssh_private_key_file=/home/ubuntu/.ssh/rev1_key105
