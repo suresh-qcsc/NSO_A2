@@ -376,7 +376,6 @@
         var: alloy_config_response.stdout_lines
       ignore_errors: yes
 
-
 - name: Install snmp, snmpd, NGINX UDP load balancer config for SNMP
   hosts: NGINX
   become: yes
@@ -501,8 +500,9 @@
   tasks:
 
     - name: Send Apache Benchmark (ab) loads to webservers and collect response
-      ansible.builtin.shell: ab -k -c 1000 -n 1200 -s 30 -g ab_bastion_gnuplot.tsv http://{{ ansible_default_ipv4.address }}:5000/
+      ansible.builtin.shell: ab -k -c 1000 -n 1200 -s 30 -g ab_webserver_gnuplot.tsv http://{{ ansible_default_ipv4.address }}:5000/
       register: ab_ws_test_result
+      ignore_errors: yes
 
     - name: Display the ab test response
       debug:
@@ -510,32 +510,15 @@
       ignore_errors: yes
 
 
-- name: Benchmarking the HAProxy Load Balancer using Apache Benchmark (ab) tests on the Bastion server
-  hosts: bastion
-  become: yes
-  tasks:
-    - name: Gather HAProxy server public IP address
-      community.general.ipify_facts:
-
-    - name: Send Apache Benchmark (ab) loads to HAProxy and collect response
-      ansible.builtin.shell: ab -k -c 1000 -n 1200 -s 30 -g ab_bastion_gnuplot.tsv http://{{ ipify_public_ip }}/
-      register: ab_bastion_test_result
-
-    - name: Display the ab test response
-      debug:
-        var: ab_bastion_test_result.stdout_lines
-      ignore_errors: yes
-
 - name: Benchmarking the HAProxy Load Balancer using Apache Benchmark (ab) tests on the HAProxy server
   hosts: HAproxy
   become: yes
   tasks:
-    - name: Gather HAProxy server public IP address
-      community.general.ipify_facts:
 
     - name: Send Apache Benchmark (ab) loads to HAProxy and collect response
-      ansible.builtin.shell: ab -k -c 1000 -n 1200 -s 30 -g ab_bastion_gnuplot.tsv http://{{ ipify_public_ip }}/
+      ansible.builtin.shell: ab -k -c 1000 -n 1200 -s 30 -g ab_haproxy_gnuplot.tsv http://127.0.0.1/
       register: ab_haproxy_test_result
+      ignore_errors: yes
 
     - name: Display the ab test response
       debug:
@@ -551,6 +534,7 @@
       debug:
         var: haproxy_log_lines.stdout_lines
       ignore_errors: yes
+
 
 # Test NGINX (snmp)      
 - name: Test NGINX (snmp) proxy
