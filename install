@@ -209,7 +209,7 @@ Host ${PROJECT}_HAproxy
     StrictHostKeyChecking no
     UserKnownHostsFile /dev/null
 
-Host $(PROJECT)_NGINX
+Host ${PROJECT}_NGINX
     HostName $NGINX_IP
     User ubuntu
     IdentityFile $KEY_PATH
