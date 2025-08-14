@@ -166,6 +166,7 @@ detect_node_change() {
                 --network "$NETWORK_NAME" \
                 --security-group "$SEC_GROUP" \
                 --tag "$TAG" \
+                --wait \
                 "$NEW_NODE"
             while ! openstack server show "$NEW_NODE" -f value -c status | grep -q "ACTIVE"; do
                 sleep 5
