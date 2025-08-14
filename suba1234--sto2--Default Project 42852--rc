@@ -1,5 +1,5 @@
 export OS_USERNAME=suba1234
-export OS_PASSWORD=<password>
+export OS_PASSWORD=<password goes here>
 export OS_AUTH_URL=https://sto2.citycloud.com:5000
 export OS_USER_DOMAIN_NAME=CCP_Domain_42852
 export OS_PROJECT_DOMAIN_NAME=CCP_Domain_42852
