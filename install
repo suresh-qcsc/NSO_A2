@@ -136,6 +136,7 @@ for NAME in "${PREFIXED_INSTANCES[@]}"; do
         --network "$NETWORK_NAME" \
         --security-group "$SG_ID" \
         --tag "$TAG" \
+        --wait \
         "$NAME"
 done
 log "1, 2, 3 Done."
