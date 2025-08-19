@@ -140,7 +140,7 @@ detect_node_change() {
     # Read expected node count from server.conf or default
     if [ -f "servers.conf" ]; then
         desired_capacity=$(grep -oP '\d+' servers.conf)
-        [ -z "$desired_capacity" ] && desired_capacity=3
+        #[ -z "$desired_capacity" ] && desired_capacity=3
     else
         desired_capacity=3
     fi
