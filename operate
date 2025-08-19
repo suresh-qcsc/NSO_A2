@@ -139,22 +139,22 @@ EOF
 detect_node_change() {
     # Read expected node count from server.conf or default
     if [ -f "servers.conf" ]; then
-        expected_node_count=$(grep -oP '\d+' servers.conf)
-        [ -z "$expected_node_count" ] && expected_node_count=3
+        desired_capacity=$(grep -oP '\d+' servers.conf)
+        [ -z "$desired_capacity" ] && desired_capacity=3
     else
-        expected_node_count=3
+        desired_capacity=3
     fi
 
-    log "Expected number of nodes: $expected_node_count"
+    log "Desired Capacity: $desired_capacity"
 
     # List ACTIVE nodes (excluding HAproxy, bastion and NGINX )
-    CURRENT_NODES=$(openstack server list --format value --column Name --status ACTIVE | grep -v -E "${PROJECT}_HAproxy|${PROJECT}_bastion|${PROJECT}_NGINX" | sort)
-    node_count=$(echo "$CURRENT_NODES" | wc -l)
+    CURRENT_CAPACITY=$(openstack server list --format value --column Name --status ACTIVE | grep -v -E "${PROJECT}_HAproxy|${PROJECT}_bastion|${PROJECT}_NGINX" | sort)
+    current_capacity=$(echo "$CURRENT_CAPACITY" | wc -l)
     log "Current ACTIVE nodes (excluding HAproxy/bastion/NGINX): $node_count"
 
-    # Launch new nodes if count < expected
-    if [ "$node_count" -lt "$expected_node_count" ]; then
-        log "Launching $((expected_node_count - node_count)) new node(s)..."
+    # Launch new nodes if CURRENT_CAPACITY < DESIRED_CAPACITY
+    if [ "$current_capacity" -lt "$desired_capacity" ]; then
+        @@@@@@log "Launching $((expected_node_count - node_count)) new node(s)..."
         for ((i=node_count; i<expected_node_count; i++)); do
             RAND_NUM=$((RANDOM % 100 + 1))
             NEW_NODE="${PROJECT}_dev${RAND_NUM}"
