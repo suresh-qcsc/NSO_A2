@@ -137,7 +137,7 @@ EOF
 
 # Function to detect node count changes and reconcile state
 detect_node_change() {
-    # Read expected node count from server.conf or default
+    # Read desired capacity from server.conf or default desired capacity 
     if [ -f "servers.conf" ]; then
         desired_capacity=$(grep -oP '\d+' servers.conf)
         #[ -z "$desired_capacity" ] && desired_capacity=3
