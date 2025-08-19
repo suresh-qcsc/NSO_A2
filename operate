@@ -154,8 +154,8 @@ detect_node_change() {
 
     # Launch new nodes if CURRENT_CAPACITY < DESIRED_CAPACITY
     if [ "$current_capacity" -lt "$desired_capacity" ]; then
-        @@@@@@log "Launching $((expected_node_count - node_count)) new node(s)..."
-        for ((i=node_count; i<expected_node_count; i++)); do
+        log "Launching $((desired_capacity - current_capacity)) new node(s)..."
+        for ((i=current_capacity; i<desired_capacity; i++)); do
             RAND_NUM=$((RANDOM % 100 + 1))
             NEW_NODE="${PROJECT}_dev${RAND_NUM}"
             log "Creating node: $NEW_NODE"
@@ -176,11 +176,11 @@ detect_node_change() {
         done
         return 1  # Node change detected
 
-    # Delete extra nodes if count > expected
-    elif [ "$node_count" -gt "$expected_node_count" ]; then
-        extra=$((node_count - expected_node_count))
+    # Delete extra nodes if CURRENT_CAPACITY > DESIRED_CAPACITY
+    elif [ "$current_capacity" -gt "$desired_capacity" ]; then
+        extra=$((current_capacity - desired_capacity))
         log "Deleting $extra extra node(s)..."
-        NODES_TO_DELETE=$(echo "$CURRENT_NODES" | shuf -n "$extra")
+        NODES_TO_DELETE=$(echo "$current_capacity" | shuf -n "$extra")
         for NODE in $NODES_TO_DELETE; do
             log "Deleting: $NODE"
             openstack server delete "$NODE"
@@ -192,7 +192,7 @@ detect_node_change() {
 }
 
 # Main process
-export ANSIBLE_LOG_PATH=./ansible.log
+#export ANSIBLE_LOG_PATH=./ansible.log
 log "Starting node management system..."
 
 while true; do
